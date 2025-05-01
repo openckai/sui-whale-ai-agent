@@ -4,3 +4,5 @@ tweepy
 asyncio
 openai
 psycopg2-binary
+httpx
+sqlalchemy
