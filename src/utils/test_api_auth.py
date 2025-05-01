@@ -22,7 +22,7 @@ def test_blockberry_api():
     """Test Blockberry API endpoints"""
     try:
         # Test accounts endpoint
-        url = "https://api.blockberry.one/sui/v1/accounts?page=0&size=20&orderBy=DESC&sortBy=BALANCE"
+        url = "https://api.blockberry.one/sui/v1/coins?page=0&size=20&orderBy=DESC&sortBy=AGE&withImage=TRUE"
         headers = {
             "accept": "*/*",
             "x-api-key": BLOCKBERRY_API_KEY
@@ -35,12 +35,12 @@ def test_blockberry_api():
         if resp.status_code == 200:
             data = resp.json()
             print(f"Total Accounts: {len(data.get('content', []))}")
-            print("\nSample Account Data:")
-            for account in data.get('content', [])[:2]:  # Show first 2 accounts
-                print(f"Address: {account.get('address')}")
-                print(f"Balance: {account.get('balance')}")
-                print(f"USD Value: {account.get('usdValue')}")
-                print("---")
+            # print("\nSample Account Data:")
+            # for account in data.get('content', [])[:2]:  # Show first 2 accounts
+            #     print(f"Address: {account.get('address')}")
+            #     print(f"Balance: {account.get('balance')}")
+            #     print(f"USD Value: {account.get('usdValue')}")
+            #     print("---")
         else:
             print("Error Response:", resp.text)
 
@@ -104,15 +104,15 @@ def main():
     # Test Blockberry API
     test_blockberry_api()
     
-    # Add delay between API calls
-    sleep(2)
+    # # Add delay between API calls
+    # sleep(2)
     
-    # Test InsideX API
-    print("\nTesting InsideX API...")
-    test_insidex_api()
+    # # Test InsideX API
+    # print("\nTesting InsideX API...")
+    # test_insidex_api()
 
-    # Test DEX Screener API
-    test_dexscreener_api()
+    # # Test DEX Screener API
+    # test_dexscreener_api()
 
 if __name__ == "__main__":
     main()
