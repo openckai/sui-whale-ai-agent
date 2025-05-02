@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, List, Optional
 from .base_client import BaseAPIClient
 
@@ -6,29 +7,18 @@ class BlockberryClient(BaseAPIClient):
         super().__init__(
             base_url="https://api.blockberry.one",
             api_key=api_key,
-            timeout=60.0
+            timeout=90.0
         )
 
-    def get_token_holders(self, 
-                         coin_type: str, 
-                         page: int = 0, 
-                         size: int = 20, 
-                         order_by: str = "DESC", 
-                         sort_by: str = "AMOUNT") -> List[Dict]:
+    async def get_token_holders_async(self, 
+                              coin_type: str, 
+                              page: int = 0, 
+                              size: int = 20, 
+                              order_by: str = "DESC", 
+                              sort_by: str = "AMOUNT") -> List[Dict]:
         """
-        Get top holders for a given coin type
-        
-        Args:
-            coin_type: The coin type (e.g., "0x2::sui::SUI")
-            page: Page number for pagination
-            size: Number of results per page
-            order_by: Sort order (ASC or DESC)
-            sort_by: Field to sort by (e.g., AMOUNT)
-            
-        Returns:
-            List of holder data containing address, balance, and USD value
+        Get top holders for a given coin type (async version)
         """
-        # Encode the coin type for URL safety
         encoded_coin_type = self.encode_url_component(coin_type)
         
         params = {
@@ -40,10 +30,9 @@ class BlockberryClient(BaseAPIClient):
         
         endpoint = f"sui/v1/coins/{encoded_coin_type}/holders"
         print(f"Fetching holders for {coin_type} from {endpoint}")
-        response = self.get(endpoint, params)
+        response = await self.get_async(endpoint, params)
         print(f"Response: {response}")
         
-        # Extract and clean holder data
         holders = response.get("content", [])
         return [
             {
@@ -56,22 +45,13 @@ class BlockberryClient(BaseAPIClient):
             for holder in holders
         ]
 
-    def get_top_accounts(self, 
-                        page: int = 0, 
-                        size: int = 20, 
-                        order_by: str = "DESC", 
-                        sort_by: str = "BALANCE") -> List[Dict]:
+    async def get_top_accounts_async(self, 
+                             page: int = 0, 
+                             size: int = 20, 
+                             order_by: str = "DESC", 
+                             sort_by: str = "BALANCE") -> List[Dict]:
         """
-        Get top SUI accounts by balance
-        
-        Args:
-            page: Page number for pagination
-            size: Number of results per page
-            order_by: Sort order (ASC or DESC)
-            sort_by: Field to sort by (e.g., BALANCE)
-            
-        Returns:
-            List of account data containing address, balance, and USD value
+        Get top SUI accounts by balance (async version)
         """
         params = {
             "page": page,
@@ -80,7 +60,7 @@ class BlockberryClient(BaseAPIClient):
             "sortBy": sort_by
         }
         
-        response = self.get("sui/v1/accounts", params)
+        response = await self.get_async("sui/v1/accounts", params)
         accounts = response.get("content", [])
         
         return [
@@ -92,27 +72,16 @@ class BlockberryClient(BaseAPIClient):
             for account in accounts
         ]
 
-    def get_whale_holders(self, 
-                         coin_type: str, 
-                         min_usd_value: float = 50000.0, 
-                         exclude_exchanges: bool = True,
-                         **kwargs) -> List[Dict]:
+    async def get_whale_holders_async(self, 
+                              coin_type: str, 
+                              min_usd_value: float = 50000.0, 
+                              exclude_exchanges: bool = True,
+                              **kwargs) -> List[Dict]:
         """
-        Get whale holders for a given coin type with minimum USD value
-        
-        Args:
-            coin_type: The coin type (e.g., "0x2::sui::SUI")
-            min_usd_value: Minimum USD value to consider as whale
-            exclude_exchanges: Whether to exclude known exchange addresses
-            **kwargs: Additional arguments to pass to get_token_holders
-            
-        Returns:
-            List of whale holders filtered by USD value
+        Get whale holders for a given coin type with minimum USD value (async version)
         """
-        # Get all holders first
-        holders = self.get_token_holders(coin_type, **kwargs)
+        holders = await self.get_token_holders_async(coin_type, **kwargs)
         
-        # Filter by USD value and optionally exclude exchanges
         whale_holders = []
         for holder in holders:
             usd_value = float(holder.get("usd_value", 0))
@@ -125,3 +94,62 @@ class BlockberryClient(BaseAPIClient):
                     whale_holders.append(holder)
         
         return whale_holders
+
+    async def get_token_details_async(self, coin_type: str, timeout: int = 60, max_retries: int = 3) -> Dict:
+        """
+        Get details for a given coin type (async version)
+        """
+        encoded_coin_type = self.encode_url_component(coin_type)
+        endpoint = f"sui/v1/coins/{encoded_coin_type}"
+        print(f"Fetching details for {coin_type} from {endpoint}")
+        
+        for attempt in range(max_retries):
+            try:
+                await asyncio.sleep(20)  # Sleep for 20 seconds between API calls
+                response = await self.get_async(endpoint)
+                print(f"Response: {response}")
+                
+                if not response:
+                    return None
+
+                token_details = {
+                    'symbol': response.get('coinSymbol', ''),
+                    'name': response.get('coinName', ''),
+                    'market_cap': float(response.get('marketCap') or 0),
+                    'price': float(response.get('price') or 0),
+                    'volume_24h': float(response.get('totalVolume') or 0),
+                    'holders': int(response.get('holdersCount') or 0)
+                }
+                
+                return token_details
+                
+            except TimeoutError:
+                print(f"Request timed out, attempt {attempt + 1} of {max_retries}")
+                if attempt == max_retries - 1:
+                    print(f"Max retries ({max_retries}) reached, giving up")
+                    return None
+                    
+            except Exception as e:
+                print(f"Error fetching token details: {str(e)}")
+                return None
+
+    # Keep synchronous methods for backward compatibility
+    def get_token_holders(self, coin_type: str, **kwargs) -> List[Dict]:
+        """Synchronous version of get_token_holders_async"""
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.get_token_holders_async(coin_type, **kwargs))
+
+    def get_top_accounts(self, **kwargs) -> List[Dict]:
+        """Synchronous version of get_top_accounts_async"""
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.get_top_accounts_async(**kwargs))
+
+    def get_whale_holders(self, coin_type: str, **kwargs) -> List[Dict]:
+        """Synchronous version of get_whale_holders_async"""
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.get_whale_holders_async(coin_type, **kwargs))
+
+    def get_token_details(self, coin_type: str, **kwargs) -> Dict:
+        """Synchronous version of get_token_details_async"""
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.get_token_details_async(coin_type, **kwargs))
