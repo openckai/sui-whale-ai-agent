@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from sqlalchemy.orm import Session
+import os
 
 from api_clients import BlockberryClient, InsideXClient
 from db.database import get_db
@@ -23,8 +24,8 @@ class WhaleDetector:
         self.manual_tokens = manual_tokens or []
         
         # Initialize API clients
-        self.blockberry = BlockberryClient()
-        self.insidex = InsideXClient()
+        self.blockberry = BlockberryClient(api_key=os.getenv("BLOCKBERRY_API_KEY"))
+        self.insidex = InsideXClient(api_key=os.getenv("INSIDEX_API_KEY"))
         
         # Track last update times
         self.last_token_update = datetime.min
@@ -41,9 +42,13 @@ class WhaleDetector:
         
         print("\nUpdating monitored tokens...")
         
-        # Get trending tokens from InsideX
-        trending = self.insidex.get_trending_tokens(min_market_cap=self.min_market_cap)
-        
+        try:
+            # Get only top 5 trending tokens
+            trending = self.insidex.get_trending_tokens(min_market_cap=self.min_market_cap)[:5]
+            print(f"Top 5 trending tokens: {trending}")
+        except Exception as e:
+            print(f"Error fetching trending tokens: {e}")
+            trending = []
         # Combine with manual tokens
         all_tokens = set(self.manual_tokens)
         for token in trending:
@@ -55,26 +60,34 @@ class WhaleDetector:
             token = db.query(Token).filter_by(coin_type=coin_type).first()
             if not token:
                 # Get token details
-                token_data = self.insidex.get_token_data(coin_type)
+                token_data = await self.blockberry.get_token_details_async(coin_type)
                 if token_data:
-                    token = Token(
-                        coin_type=coin_type,
-                        symbol=token_data['symbol'],
-                        name=token_data.get('name', token_data['symbol']),
-                        market_cap=token_data['market_cap'],
-                        price_usd=token_data['price'],
-                        volume_24h=token_data['volume_24h']
-                    )
-                    db.add(token)
-                    updated_tokens.append(token)
+                    try:
+                        token = Token(
+                            coin_type=coin_type,
+                            symbol=token_data['symbol'],
+                            name=token_data.get('name', token_data['symbol']),
+                            market_cap=float(token_data.get('marketCap') or 0),
+                            price_usd=float(token_data.get('price') or 0),
+                            volume_24h=float(token_data.get('totalVolume') or 0)
+                        )
+                        db.add(token)
+                        updated_tokens.append(token)
+                    except (TypeError, ValueError) as e:
+                        print(f"Error creating token {coin_type}: {e}")
+                        continue
             else:
                 # Update existing token
-                token_data = self.insidex.get_token_data(coin_type)
+                token_data = await self.blockberry.get_token_details_async(coin_type)
                 if token_data:
-                    token.market_cap = token_data['market_cap']
-                    token.price_usd = token_data['price']
-                    token.volume_24h = token_data['volume_24h']
-                    updated_tokens.append(token)
+                    try:
+                        token.market_cap = float(token_data.get('marketCap') or 0)
+                        token.price_usd = float(token_data.get('price') or 0)
+                        token.volume_24h = float(token_data.get('totalVolume') or 0)
+                        updated_tokens.append(token)
+                    except (TypeError, ValueError) as e:
+                        print(f"Error updating token {coin_type}: {e}")
+                        continue
         
         db.commit()
         self.last_token_update = current_time
@@ -91,7 +104,7 @@ class WhaleDetector:
         print(f"\nUpdating whale holders for {token.symbol}...")
         
         # Get holders from Blockberry
-        holders = self.blockberry.get_token_holders(token.coin_type)
+        holders = await self.blockberry.get_token_holders_async(token.coin_type)
         
         # Process only whales
         whales = []

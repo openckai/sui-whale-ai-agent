@@ -1,4 +1,6 @@
 import os
+import time
+from datetime import datetime, timedelta
 import asyncio
 import time
 from typing import List, Dict, Optional
@@ -77,13 +79,26 @@ async def get_token_whales_batch(coin_types: List[str], min_holdings: float = 20
     results = {}
     for coin_type in coin_types:
         try:
-            results[coin_type] = get_token_whales(coin_type, min_holdings)
+            print(f"\nFetching holders for {coin_type}...")
+            holders = await blockberry.get_token_holders_async(coin_type)
+            whales = [h for h in holders if float(h['usd_value']) >= min_holdings]
+            
+            print(f"Found {len(whales)} whales holding >${min_holdings:,} for {coin_type}")
+            for whale in whales[:5]:  # Show top 5
+                print(f"\nAddress: {whale['address']}")
+                print(f"Holdings: ${float(whale['usd_value']):,.2f}")
+                print(f"Percentage: {float(whale['percentage']):,.2f}%")
+            
+            results[coin_type] = whales
+            
             if coin_type != coin_types[-1]:  # Don't sleep after the last call
                 print(f"Waiting {BLOCKBERRY_RATE_LIMIT} seconds before next API call...")
                 await asyncio.sleep(BLOCKBERRY_RATE_LIMIT)
+                
         except Exception as e:
             print(f"Error fetching whales for {coin_type}: {e}")
             results[coin_type] = []
+            
     return results
 
 def get_wallet_stats(address: str) -> Dict:
@@ -274,13 +289,79 @@ async def analyze_multiple_tokens(coin_types: List[str]) -> Dict[str, Dict]:
     for coin_type in coin_types:
         try:
             print(f"\nAnalyzing {coin_type}...")
-            results[coin_type] = analyze_token_distribution(coin_type)
+            # Use async methods directly instead of synchronous ones
+            holders = await blockberry.get_token_holders_async(coin_type)
+            print(f"Found {len(holders)} holders for {coin_type}")
+            
+            # Filter and categorize holders
+            whales = []
+            medium_holders = []
+            small_holders = []
+            
+            for holder in holders:
+                usd_value = float(holder['usd_value'])
+                if usd_value >= 20_000:
+                    whales.append(holder)
+                elif usd_value >= 5_000:
+                    medium_holders.append(holder)
+                elif usd_value >= 1000:  # Default min_holdings
+                    small_holders.append(holder)
+            
+            # Calculate statistics
+            total_holders = len(whales) + len(medium_holders) + len(small_holders)
+            whale_value = sum(float(h['usd_value']) for h in whales)
+            medium_value = sum(float(h['usd_value']) for h in medium_holders)
+            small_value = sum(float(h['usd_value']) for h in small_holders)
+            total_value = whale_value + medium_value + small_value
+            
+            result = {
+                "total_holders": total_holders,
+                "distribution": {
+                    "whales": {
+                        "count": len(whales),
+                        "total_value": whale_value,
+                        "percentage": (whale_value / total_value * 100) if total_value > 0 else 0
+                    },
+                    "medium": {
+                        "count": len(medium_holders),
+                        "total_value": medium_value,
+                        "percentage": (medium_value / total_value * 100) if total_value > 0 else 0
+                    },
+                    "small": {
+                        "count": len(small_holders),
+                        "total_value": small_value,
+                        "percentage": (small_value / total_value * 100) if total_value > 0 else 0
+                    }
+                }
+            }
+            
+            print(f"\nToken Distribution Analysis for {coin_type}:")
+            print(f"Total Holders: {total_holders}")
+            print("\nWhales (>${:,.0f}):".format(20_000))
+            print(f"Count: {result['distribution']['whales']['count']}")
+            print(f"Total Value: ${result['distribution']['whales']['total_value']:,.2f}")
+            print(f"Percentage: {result['distribution']['whales']['percentage']:.1f}%")
+            
+            print("\nMedium Holders (>${:,.0f}-${:,.0f}):".format(5_000, 20_000))
+            print(f"Count: {result['distribution']['medium']['count']}")
+            print(f"Total Value: ${result['distribution']['medium']['total_value']:,.2f}")
+            print(f"Percentage: {result['distribution']['medium']['percentage']:.1f}%")
+            
+            print("\nSmall Holders (>${:,.0f}-${:,.0f}):".format(1000, 5_000))
+            print(f"Count: {result['distribution']['small']['count']}")
+            print(f"Total Value: ${result['distribution']['small']['total_value']:,.2f}")
+            print(f"Percentage: {result['distribution']['small']['percentage']:.1f}%")
+            
+            results[coin_type] = result
+            
             if coin_type != coin_types[-1]:  # Don't sleep after the last call
                 print(f"Waiting {BLOCKBERRY_RATE_LIMIT} seconds before next analysis...")
                 await asyncio.sleep(BLOCKBERRY_RATE_LIMIT)
+                
         except Exception as e:
             print(f"Error analyzing {coin_type}: {e}")
             results[coin_type] = None
+            
     return results
 
 def store_token(db, token_data: Dict) -> Token:
@@ -365,11 +446,8 @@ def update_wallet_statistics(db, address: str, movement: Optional[WhaleMovement]
     db.commit()
     return stats
 
-async def main_async():
-    """Async main function for batch processing with database storage"""
-    # Initialize database
-    init_database()
-    
+async def process_token_data():
+    """Process token data and whale movements"""
     # Get trending tokens
     trending = get_trending_tokens(min_market_cap=1_000_000)
     
@@ -377,7 +455,7 @@ async def main_async():
         with get_db() as db:
             # Store trending tokens and get coin types
             coin_types = []
-            for token_data in trending[:1]:  # Process top 5 tokens
+            for token_data in trending[:5]:  # Process top 5 tokens
                 token = store_token(db, token_data)
                 coin_types.append(token_data['coin_type'])
                 print(f"\nStored/Updated token: {token.symbol}")
@@ -415,9 +493,47 @@ async def main_async():
                 
                 if coin_type in analysis_results and analysis_results[coin_type]:
                     print("Distribution analysis data stored")
+
+async def main_async():
+    """Async main function for continuous monitoring"""
+    # Initialize database
+    init_database()
+    
+    print("\nStarting continuous whale monitoring...")
+    
+    while True:
+        try:
+            print("\n" + "="*50)
+            print("Starting new monitoring cycle")
+            print("="*50)
             
-            print("\nDatabase update completed successfully")
+            # Process token data and whale movements
+            await process_token_data()
+            
+            # Print recent whale movements from database
+            with get_db() as db:
+                recent_movements = db.query(WhaleMovement).order_by(
+                    WhaleMovement.timestamp.desc()
+                ).limit(10).all()
+                
+                if recent_movements:
+                    print("\nRecent Whale Movements:")
+                    for movement in recent_movements:
+                        print(f"Token: {movement.token.symbol}")
+                        print(f"Type: {movement.movement_type}")
+                        print(f"Amount: ${movement.usd_value:,.2f}")
+                        print(f"Time: {movement.timestamp}")
+                        print("-"*30)
+            
+            # Wait before next cycle
+            print("\nWaiting 5 minutes before next cycle...")
+            await asyncio.sleep(300)  # 5 minutes
+            
+        except Exception as e:
+            print(f"\nError in monitoring cycle: {e}")
+            print("Waiting 30 seconds before retry...")
+            await asyncio.sleep(30)
 
 if __name__ == "__main__":
-    # Run async main
+    # Run continuous monitoring
     asyncio.run(main_async())
