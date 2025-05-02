@@ -17,6 +17,7 @@ class Token(Base):
     market_cap = Column(Float)
     price_usd = Column(Float)
     volume_24h = Column(Float)
+    is_meme_token = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
