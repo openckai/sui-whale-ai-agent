@@ -74,7 +74,7 @@ class BlockberryClient(BaseAPIClient):
 
     async def get_whale_holders_async(self, 
                               coin_type: str, 
-                              min_usd_value: float = 50000.0, 
+                              min_usd_value: float = 1000000.0, 
                               exclude_exchanges: bool = True,
                               **kwargs) -> List[Dict]:
         """
