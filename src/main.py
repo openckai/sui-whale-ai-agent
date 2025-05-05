@@ -2,9 +2,7 @@ import os
 import time
 from datetime import datetime, timedelta
 import asyncio
-import time
 from typing import List, Dict, Optional
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from sqlalchemy import exists
 
@@ -13,8 +11,10 @@ from db.models import Token, WhaleHolder, WhaleMovement, WalletStats
 from api_clients import BlockberryClient, InsideXClient, DexScreenerClient
 from whale_detector.detector import WhaleDetector
 
+
 # Load environment variables
 load_dotenv()
+
 
 # Initialize API clients
 blockberry = BlockberryClient(api_key=os.getenv("BLOCKBERRY_API_KEY"))
@@ -33,6 +33,7 @@ def init_database():
     init_db()
     print("Database initialized successfully")
 
+
 def get_trending_tokens(min_market_cap: float = 1_000_000) -> List[Dict]:
     """
     Get trending tokens with minimum market cap
@@ -42,12 +43,9 @@ def get_trending_tokens(min_market_cap: float = 1_000_000) -> List[Dict]:
     """
     tokens = insidex.get_trending_tokens(min_market_cap=min_market_cap)
     print(f"\nFound {len(tokens)} trending tokens with >${min_market_cap:,} market cap")
-    for token in tokens[:5]:  # Show top 5
-        print(f"\nToken: {token['symbol']}")
-        print(f"Market Cap: ${token['market_cap']:,.2f}")
-        print(f"Price: ${token['price']:,.6f}")
-        print(f"24h Volume: ${token['volume_24h']:,.2f}")
-    return tokens
+    # Filter for meme tokens
+    return tokens[:10]
+
 
 def get_token_whales(coin_type: str, min_holdings: float = 20_000) -> List[Dict]:
     """
@@ -62,7 +60,7 @@ def get_token_whales(coin_type: str, min_holdings: float = 20_000) -> List[Dict]
     whales = [h for h in holders if float(h['usd_value']) >= min_holdings]
     
     print(f"Found {len(whales)} whales holding >${min_holdings:,} for {coin_type}")
-    for whale in whales[:5]:  # Show top 5
+    for whale in whales[:10]:  # Show top 5
         print(f"\nAddress: {whale['address']}")
         print(f"Holdings: ${float(whale['usd_value']):,.2f}")
         print(f"Percentage: {float(whale['percentage']):,.2f}%")
@@ -84,7 +82,7 @@ async def get_token_whales_batch(coin_types: List[str], min_holdings: float = 20
             whales = [h for h in holders if float(h['usd_value']) >= min_holdings]
             
             print(f"Found {len(whales)} whales holding >${min_holdings:,} for {coin_type}")
-            for whale in whales[:5]:  # Show top 5
+            for whale in whales[:10]:  # Show top 5
                 print(f"\nAddress: {whale['address']}")
                 print(f"Holdings: ${float(whale['usd_value']):,.2f}")
                 print(f"Percentage: {float(whale['percentage']):,.2f}%")
@@ -124,7 +122,7 @@ def get_wallet_stats(address: str) -> Dict:
             "address": address,
             "total_volume_usd": stats.total_volume_usd,
             "total_trades": stats.total_trades,
-            "win_rate": stats.win_rate(),
+            "win_rate": stats.win_rate,
             "total_pnl_usd": stats.total_pnl_usd,
             "current_holdings": [
                 {
@@ -145,6 +143,8 @@ def get_wallet_stats(address: str) -> Dict:
             ]
         }
         
+        print(result)
+        
         print(f"\nWallet Statistics for {address}:")
         print(f"Total Volume: ${result['total_volume_usd']:,.2f}")
         print(f"Total Trades: {result['total_trades']}")
@@ -155,9 +155,6 @@ def get_wallet_stats(address: str) -> Dict:
         for holding in result['current_holdings']:
             print(f"{holding['token']}: ${holding['usd_value']:,.2f} ({holding['percentage']:.2f}%)")
         
-        print("\nRecent Movements:")
-        for move in result['recent_movements']:
-            print(f"{move['timestamp']}: {move['type']} {move['token']} ${move['usd_value']:,.2f}")
         
         return result
 
@@ -385,7 +382,7 @@ def store_token(db, token_data: Dict) -> Token:
     db.commit()
     return token
 
-def store_whale_holder(db, holder_data: Dict, token: Token) -> WhaleHolder:
+def store_whale_holder(db, holder_data: Dict, token: Token, detector: WhaleDetector) -> WhaleHolder:
     """Store whale holder data in database"""
     holder = db.query(WhaleHolder).filter_by(
         address=holder_data['address'],
@@ -415,84 +412,129 @@ def store_whale_holder(db, holder_data: Dict, token: Token) -> WhaleHolder:
             )
             db.add(movement)
         
-        # Update holder data
-        holder.balance = float(holder_data['balance'])
-        holder.usd_value = float(holder_data['usd_value'])
-        holder.percentage = float(holder_data['percentage'])
-    
+
+            # Update holder data
+            holder.balance = float(holder_data['balance'])
+            holder.usd_value = float(holder_data['usd_value'])
+            holder.percentage = float(holder_data['percentage'])
+            
+            if movement:
+                detector.update_wallet_stats(db, holder.address, movement)
+            else:
+                detector.update_wallet_stats(db, holder.address)
+   
     db.commit()
     return holder
 
-def update_wallet_statistics(db, address: str, movement: Optional[WhaleMovement] = None):
-    """Update wallet statistics based on movements"""
-    stats = db.query(WalletStats).filter_by(address=address).first()
-    
-    if not stats:
-        stats = WalletStats(
-            address=address,
-            total_volume_usd=0,
-            total_trades=0,
-            total_pnl_usd=0
-        )
-        db.add(stats)
-    
-    if movement:
-        stats.total_volume_usd += movement.usd_value
-        stats.total_trades += 1
-        # Simple PnL calculation - can be enhanced based on requirements
-        if movement.movement_type == 'sell':
-            stats.total_pnl_usd += movement.usd_value
-        
-    db.commit()
-    return stats
+def has_recent_meme_swap(activity_list, meme_coin_symbol):
+    # Look for Swap activity involving the meme coin
+    for act in activity_list:
+        types = act.get("activityType", [])
+        details = act.get("details", {}).get("detailsDto", {})
+        coins = details.get("coins", [])
+        for coin in coins:
+            if coin.get("symbol", "").lower() == meme_coin_symbol.lower():
+                if "Swap" in types:
+                    return True
+    return False
+
 
 async def process_token_data():
-    """Process token data and whale movements"""
-    # Get trending tokens
-    trending = get_trending_tokens(min_market_cap=1_000_000)
+    """Track whale movements on LOFI for whales holding trending tokens"""
     
-    if trending:
-        with get_db() as db:
-            # Store trending tokens and get coin types
-            coin_types = []
-            for token_data in trending[:5]:  # Process top 5 tokens
-                token = store_token(db, token_data)
-                coin_types.append(token_data['coin_type'])
-                print(f"\nStored/Updated token: {token.symbol}")
-        
-            # Analyze multiple tokens
-            print("\nAnalyzing multiple tokens...")
-            analysis_results = await analyze_multiple_tokens(coin_types)
-            
-            # Get whales for multiple tokens
-            print("\nGetting whales for multiple tokens...")
-            whale_results = await get_token_whales_batch(coin_types)
-            
-            # Process results and store data
-            for coin_type in coin_types:
-                print(f"\nProcessing results for {coin_type}:")
+    detector = WhaleDetector(
+        min_market_cap=1_000_000,
+        min_whale_holdings=20_000,
+        update_interval=300
+    )
+
+    # Define the LOFI token coin type
+    LOFI_COIN_TYPE = "0xf22da9a24ad027cccb5f2d496cbe91de953d363513db08a3a734d361c7c17503::LOFI::LOFI"
+
+    # Step 1: Get trending tokens
+    # trending = get_trending_tokens(min_market_cap=1_000_000)
+    # if not trending:
+    #     print("No trending tokens found.")
+    #     return
+
+    with get_db() as db:
+        print("\nFetching whale holders for trending tokens...")
+
+        whale_addresses = set()
+
+        # Step 2: Get whale addresses for each trending token
+        for token_data in trending:
+            try:
+                holders = await blockberry.get_token_holders_async(token_data['coin_type'])
+                whales = [h for h in holders if float(h['usd_value']) >= 20_000]
+                for whale in whales:
+                    whale_addresses.add(whale['address'])
+            except Exception as e:
+                print(f"Error fetching holders for {token_data['symbol']}: {e}")
+
+        print(f"Found {len(whale_addresses)} unique whale addresses")
+
+        # Step 3: Monitor LOFI holdings of these whales
+        for address in whale_addresses:
+            try:
+                activity_list = await blockberry.fetch_whale_activity(address, since_minutes=1440)
                 
-                # Get token from database
-                token = db.query(Token).filter_by(coin_type=coin_type).first()
-                if not token:
-                    print(f"Token not found in database: {coin_type}")
+                if not activity_list:
+                    print(f"No activity found for whale {address}")
+                    continue
+                detector.update_wallet_stats(db, address)
+                whale_stats = get_wallet_stats(address)
+                if has_recent_meme_swap(activity_list, "LOFI"):
+                    print(f"🚨 LOFI Whale Movement Detected 🚨")
+                    for activity in activity_list:
+                        print(f"Activity: {activity}")
+                        if "Swap" in activity.get("activityType") :
+                            print(f"Activity for swap: {activity}")
+                            details = activity.get("details", {}).get("detailsDto", {})
+                            coins = details.get("coins", [])
+                            
+                            # Determine if this is a buy or sell of LOFI
+                            for coin in coins:
+                                if coin.get("symbol").lower() == "lofi":
+                                    print(f"Activity: {activity}")
+                                    amount = coin["amount"]
+                                    movement_type = 'bought' if amount > 0 else 'sold'
+                                    amount = abs(amount)
+                                    
+                                    # Get current wallet holdings
+                                    token = db.query(Token).filter_by(coin_type=LOFI_COIN_TYPE).first()
+                                    if not token:
+                                        print(f"Token not found for {LOFI_COIN_TYPE}")
+                                        continue
+                                    print(
+                                        f"A $LOFI whale just "
+                                        f"{movement_type} "
+                                        f"$ {amount * token.price_usd:,.2f} worth of $LOFI at "
+                                        f"${token.market_cap/1000:,.2f}K  🐋"
+                                    )
+                                    print("\nInsights on this whale:")
+                                    if whale_stats:
+                                        print(f"🔹 Win Rate: {whale_stats['win_rate']:.2f}%")
+                                        print(f"🔹 Total Trades: {whale_stats['total_trades']}")
+                                        pnl_str = 'Positive' if whale_stats['total_pnl_usd'] > 0 else 'Negative'
+                                        avg_trade = whale_stats['total_volume_usd'] / whale_stats['total_trades'] if whale_stats['total_trades'] > 0 else 0
+                                        print(f"🔹 PnL: {pnl_str}")
+                                        print(f"🔹 Average Trade: ${avg_trade:,.2f}")
+                                        print(f"🔹 Total Volume: ${whale_stats['total_volume_usd']:,.2f}")
+                                    else:
+                                        print("🔹 No stats available for this whale.")
+                                    print("-" * 30)
                     continue
                 
-                if coin_type in whale_results and whale_results[coin_type]:
-                    whales = whale_results[coin_type]
-                    print(f"Storing {len(whales)} whale holders...")
-                    
-                    for whale_data in whales:
-                        # Store whale holder
-                        holder = store_whale_holder(db, whale_data, token)
-                        
-                        # Update wallet statistics
-                        update_wallet_statistics(db, holder.address)
-                    
-                    print(f"Successfully stored whale data for {token.symbol}")
-                
-                if coin_type in analysis_results and analysis_results[coin_type]:
-                    print("Distribution analysis data stored")
+                # Print alert
+                print("\n🚨 LOFI Whale Movement Detected 🚨")
+                print(f"Whale Address: {address}")
+                print(f"Holding: ${whale_stats['total_volume_usd']:,.2f} ({whale_stats['win_rate']:.2f}%)")
+                print("-" * 50)
+
+            except Exception as e:
+                print(f"Error processing whale {address}: {e}")
+
 
 async def main_async():
     """Async main function for continuous monitoring"""
@@ -510,24 +552,8 @@ async def main_async():
             # Process token data and whale movements
             await process_token_data()
             
-            # Print recent whale movements from database
-            with get_db() as db:
-                recent_movements = db.query(WhaleMovement).order_by(
-                    WhaleMovement.timestamp.desc()
-                ).limit(10).all()
-                
-                if recent_movements:
-                    print("\nRecent Whale Movements:")
-                    for movement in recent_movements:
-                        print(f"Token: {movement.token.symbol}")
-                        print(f"Type: {movement.movement_type}")
-                        print(f"Amount: ${movement.usd_value:,.2f}")
-                        print(f"Time: {movement.timestamp}")
-                        print("-"*30)
-            
-            # Wait before next cycle
-            print("\nWaiting 5 minutes before next cycle...")
-            await asyncio.sleep(300)  # 5 minutes
+            print("\nWaiting 30 seconds before next cycle...")
+            await asyncio.sleep(30)  # 5 minutes
             
         except Exception as e:
             print(f"\nError in monitoring cycle: {e}")

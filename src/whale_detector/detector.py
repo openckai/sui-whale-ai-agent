@@ -32,6 +32,43 @@ class WhaleDetector:
         self.last_holder_update = datetime.min
         self.last_movement_check = datetime.min
         
+        # Known utility tokens to exclude from monitoring
+        self.utility_tokens = {
+            "0x2::sui::SUI",  # SUI
+            "0x2::sui::BLUE",  # BLUE
+            # Add more utility tokens as needed
+        }
+        
+    def is_meme_token(self, token_data: Dict) -> bool:
+        """
+        Determine if a token is likely a meme token based on characteristics
+        
+        Args:
+            token_data: Token data from API
+            
+        Returns:
+            bool: True if token is likely a meme token
+        """
+        # Check if token is in utility tokens list
+        if token_data.get('coin_type') in self.utility_tokens:
+            return False
+            
+        # Meme token characteristics
+        name = token_data.get('name', '').lower()
+        symbol = token_data.get('symbol', '').lower()
+        
+        # Check for meme-like names/symbols
+        meme_keywords = ['meme', 'pepe', 'doge', 'shib', 'inu', 'wojak', 'chad', 'based']
+        if any(keyword in name or keyword in symbol for keyword in meme_keywords):
+            return True
+            
+        # Check for low market cap (meme tokens often have lower market caps)
+        market_cap = float(token_data.get('marketCap', 0))
+        if market_cap < 10_000_000:  # Less than $10M market cap
+            return True
+            
+        return False
+        
     async def update_monitored_tokens(self, db: Session) -> List[Token]:
         """Update list of monitored tokens based on market cap"""
         current_time = datetime.utcnow()
@@ -43,16 +80,29 @@ class WhaleDetector:
         print("\nUpdating monitored tokens...")
         
         try:
-            # Get only top 5 trending tokens
-            trending = self.insidex.get_trending_tokens(min_market_cap=self.min_market_cap)[:5]
-            print(f"Top 5 trending tokens: {trending}")
+            # Get trending tokens
+            trending = self.insidex.get_trending_tokens(min_market_cap=self.min_market_cap)
+            
+            # Prioritize meme tokens
+            meme_tokens = []
+            utility_tokens = []
+            
+            for token in trending:
+                if self.is_meme_token(token):
+                    meme_tokens.append(token)
+                else:
+                    utility_tokens.append(token)
+                    
+            # Combine with manual tokens, prioritizing meme tokens
+            all_tokens = set(self.manual_tokens)
+            for token in meme_tokens + utility_tokens:
+                all_tokens.add(token['coin_type'])
+            
+            print(f"Found {len(meme_tokens)} meme tokens and {len(utility_tokens)} utility tokens")
+            
         except Exception as e:
             print(f"Error fetching trending tokens: {e}")
-            trending = []
-        # Combine with manual tokens
-        all_tokens = set(self.manual_tokens)
-        for token in trending:
-            all_tokens.add(token['coin_type'])
+            all_tokens = set(self.manual_tokens)
         
         # Update database
         updated_tokens = []
@@ -69,7 +119,8 @@ class WhaleDetector:
                             name=token_data.get('name', token_data['symbol']),
                             market_cap=float(token_data.get('marketCap') or 0),
                             price_usd=float(token_data.get('price') or 0),
-                            volume_24h=float(token_data.get('totalVolume') or 0)
+                            volume_24h=float(token_data.get('totalVolume') or 0),
+                            is_meme_token=self.is_meme_token(token_data)
                         )
                         db.add(token)
                         updated_tokens.append(token)
@@ -84,6 +135,7 @@ class WhaleDetector:
                         token.market_cap = float(token_data.get('marketCap') or 0)
                         token.price_usd = float(token_data.get('price') or 0)
                         token.volume_24h = float(token_data.get('totalVolume') or 0)
+                        token.is_meme_token = self.is_meme_token(token_data)
                         updated_tokens.append(token)
                     except (TypeError, ValueError) as e:
                         print(f"Error updating token {coin_type}: {e}")
@@ -115,6 +167,8 @@ class WhaleDetector:
                     address=holder_data['address'],
                     token_id=token.id
                 ).first()
+
+                print(f"Whale holder for line 170: {whale}")
                 
                 if not whale:
                     whale = WhaleHolder(
@@ -152,36 +206,32 @@ class WhaleDetector:
         db.commit()
         self.last_holder_update = current_time
         return whales
+
+
     
     def update_wallet_stats(self, db: Session, address: str, movement: Optional[WhaleMovement] = None) -> WalletStats:
         """Update wallet statistics based on movements"""
         stats = db.query(WalletStats).filter_by(address=address).first()
-        
-        if not stats:
-            stats = WalletStats(
-                address=address,
-                total_volume_usd=0,
-                total_trades=0,
-                total_pnl_usd=0
-            )
+        try:
+            # Create stats if not exists
+            if not stats:
+                stats = WalletStats(address=address)
             db.add(stats)
-        
-        if movement:
-            stats.total_volume_usd += movement.usd_value
-            stats.total_trades += 1
             
-            # Enhanced PnL calculation
-            if movement.movement_type == 'sell':
-                # Get average buy price from previous movements
-                buy_movements = db.query(WhaleMovement).filter_by(
-                    holder_id=movement.holder_id,
-                    movement_type='buy'
-                ).order_by(WhaleMovement.timestamp.desc()).all()
+            # Get detailed trader stats from InsideX
+            try:
+                trader_stats = self.insidex.get_trader_stats(address)
                 
-                if buy_movements:
-                    avg_buy_price = sum(m.usd_value for m in buy_movements) / sum(m.amount for m in buy_movements)
-                    pnl = (movement.usd_value / movement.amount - avg_buy_price) * movement.amount
-                    stats.total_pnl_usd += pnl
+                if trader_stats:
+                    stats.total_trades = trader_stats.get('total_trades', 0)
+                    stats.total_pnl_usd = trader_stats.get('pnl', 0)
+                    stats.total_volume_usd = trader_stats.get('volume', 0) 
+                    stats.win_rate = trader_stats.get('win_rate', 0)
+            except Exception as e:
+                print(f"Error getting trader stats from InsideX: {e}")
+        
+        except Exception as e:
+            print(f"Error getting trader stats from InsideX: {e}")
         
         db.commit()
         return stats
@@ -249,10 +299,49 @@ class WhaleDetector:
                         for whale in whales:
                             analysis = self.analyze_wallet(db, whale.address)
                             if analysis:
-                                print(f"\nWhale Alert: {whale.address}")
-                                print(f"Current Holdings: ${analysis['total_holdings']:,.2f}")
-                                print(f"Win Rate: {analysis['win_rate']:.1f}%")
-                                print(f"Total PnL: ${analysis['total_pnl_usd']:,.2f}")
+                                # Get recent movements for this whale
+                                recent_movements = analysis.get('recent_movements', [])
+                                if recent_movements:
+                                    latest_movement = recent_movements[0]  # Most recent movement
+                                    
+                                    # Enhanced alert for meme tokens
+                                    if token.is_meme_token:
+                                        print("\n" + "="*80)
+                                        print("🚨 WHALE ALERT: MEME TOKEN MOVEMENT 🚨")
+                                        print("="*80)
+                                        print(f"Token: {token.symbol} ({token.name})")
+                                        print(f"Type: {'BUY' if latest_movement['type'] == 'buy' else 'SELL'}")
+                                        print(f"Amount: ${latest_movement['usd_value']:,.2f}")
+                                        print(f"Time: {latest_movement['timestamp']}")
+                                        
+                                        print("\n🐋 WHALE DETAILS:")
+                                        print(f"Address: {whale.address}")
+                                        print(f"Current Holdings: ${whale.usd_value:,.2f}")
+                                        print(f"Percentage of Supply: {whale.percentage:.2f}%")
+                                        print(f"Total Portfolio Value: ${analysis['total_holdings']:,.2f}")
+                                        print(f"Win Rate: {analysis['win_rate']:.1f}%")
+                                        print(f"Total PnL: ${analysis['total_pnl_usd']:,.2f}")
+                                        print(f"Average Trade Size: ${analysis['avg_trade_size']:,.2f}")
+                                        
+                                        print("\n📊 CURRENT HOLDINGS:")
+                                        for holding in analysis['current_holdings']:
+                                            print(f"- {holding['token']}: ${holding['usd_value']:,.2f} ({holding['percentage']:.2f}%)")
+                                        
+                                        print("\n📈 RECENT ACTIVITY (Last 3 Movements):")
+                                        for move in recent_movements[:3]:
+                                            print(f"- {move['timestamp']}: {move['type'].upper()} ${move['usd_value']:,.2f}")
+                                            print(f"  Token: {move['token']}")
+                                            print(f"  Amount: {move['amount']:,.2f}")
+                                        print("="*80 + "\n")
+                                    else:
+                                        # For utility tokens, only alert on very large movements
+                                        if analysis['total_holdings'] > 100_000:  # $100k+ holdings
+                                            print("\n" + "-"*60)
+                                            print("⚠️ Utility Token Movement")
+                                            print(f"Token: {token.symbol} ({token.name})")
+                                            print(f"Address: {whale.address}")
+                                            print(f"Holdings: ${analysis['total_holdings']:,.2f}")
+                                            print("-"*60 + "\n")
                 
                 # Wait for next update
                 await asyncio.sleep(self.update_interval)

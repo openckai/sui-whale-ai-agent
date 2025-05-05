@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from .base_client import BaseAPIClient
 
@@ -7,7 +8,7 @@ class BlockberryClient(BaseAPIClient):
         super().__init__(
             base_url="https://api.blockberry.one",
             api_key=api_key,
-            timeout=90.0
+            timeout=120.0
         )
 
     async def get_token_holders_async(self, 
@@ -31,7 +32,6 @@ class BlockberryClient(BaseAPIClient):
         endpoint = f"sui/v1/coins/{encoded_coin_type}/holders"
         print(f"Fetching holders for {coin_type} from {endpoint}")
         response = await self.get_async(endpoint, params)
-        print(f"Response: {response}")
         
         holders = response.get("content", [])
         return [
@@ -153,3 +153,127 @@ class BlockberryClient(BaseAPIClient):
         """Synchronous version of get_token_details_async"""
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(self.get_token_details_async(coin_type, **kwargs))
+    async def get_wallet_holdings_async(self, address: str) -> List[Dict]:
+        """Get wallet holdings for a given address"""
+        encoded_address = self.encode_url_component(address)
+        endpoint = f"sui/v1/accounts/{encoded_address}/objects"
+        
+        try:
+            await asyncio.sleep(20)  # Sleep for 20 seconds between API calls
+            print(f"Fetching holdings for {address} from {endpoint} and waiting 20 seconds")
+            response = await self.post_async(endpoint, json={"objectTypes": ["coin"]})
+            if not response:
+                return []
+            
+            holdings = response.get("coins", []) or []
+            results = []
+            
+            for holding in holdings:
+                coin_type = holding.get("coinType")
+                if not coin_type:
+                    continue
+                try:
+                    # Extract values with proper defaults based on API response format
+                    balance = float(holding.get("totalBalance", 0))
+                    coin_price = float(holding.get("coinPrice", 0))
+                    usd_value = balance * coin_price
+                    
+                    results.append({
+                        "coin_type": coin_type,
+                        "symbol": holding.get("coinSymbol", "UNKNOWN"),
+                        "name": holding.get("coinName", "UNKNOWN"), 
+                        "balance": balance,
+                        "usd_value": usd_value,
+                        "price": coin_price,
+                        "decimals": holding.get("decimals", 9),
+                        "objects_count": holding.get("objectsCount", 0),
+                        "verified": holding.get("verified", False),
+                        "bridged": holding.get("bridged", False),
+                        "img_url": holding.get("imgUrl"),
+                        "security_message": holding.get("securityMessage"),
+                        "has_no_metadata": holding.get("hasNoMetadata", False)
+                    })
+                    
+                except (ValueError, TypeError) as e:
+                    print(f"Error parsing holding data for {coin_type}: {e}")
+                    continue
+                    
+            return results
+            
+        except Exception as e:
+            print(f"Error fetching wallet holdings for {address}: {e}")
+            return []
+
+    async def get_coin_metadata(self, coin_type: str) -> Dict:
+        """Get metadata for a given coin type"""
+        if coin_type in self.coin_metadata_cache:
+            return self.coin_metadata_cache[coin_type]
+            
+        encoded_coin_type = self.encode_url_component(coin_type)
+        endpoint = f"sui/v1/coins/{encoded_coin_type}"
+        
+        try:
+            await asyncio.sleep(20)  # Sleep for 20 seconds between API calls
+            response = await self.get_async(endpoint)
+            if not response:
+                return {}
+                
+            metadata = {
+                "symbol": response.get("coinSymbol", ""),
+                "name": response.get("coinName", ""),
+                "decimals": response.get("decimals", 9),
+                "price": float(response.get("price") or 0),
+                "market_cap": float(response.get("marketCap") or 0),
+                "volume_24h": float(response.get("totalVolume") or 0)
+            }
+            
+            self.coin_metadata_cache[coin_type] = metadata
+            return metadata
+            
+        except Exception as e:
+            print(f"Error fetching metadata for {coin_type}: {e}")
+            return {}
+        
+    async def fetch_whale_activity(self, address: str, since_minutes: int = 1440) -> List[Dict]:
+        """
+        Fetch recent activity for a whale address
+        
+        Args:
+            address: The wallet address to get activity for
+            since_minutes: Only return activities within this many minutes (default 24 hours)
+            
+        Returns:
+            List of recent activities
+        """
+        endpoint = f"sui/v1/accounts/{address}/activity"
+        params = {
+            "size": 20,
+            "orderBy": "DESC"
+        }
+        print(f"Fetching activity for {address} from {endpoint} with params {params}")
+        
+        try:
+            await asyncio.sleep(30)  # Sleep for 20 seconds between API calls
+            print(f"Fetching activity for {address} from {endpoint} with params {params} and waiting 30 seconds")
+            response = await self.get_async(endpoint, params=params)
+            if not response:
+                return []
+                
+            data = response.get("content", [])
+            
+            # Filter for activities within the last `since_minutes`
+            now = datetime.utcnow()
+            recent = []
+            
+            for activity in data:
+                timestamp = activity.get("timestamp")
+                if timestamp:
+                    activity_time = datetime.utcfromtimestamp(timestamp / 1000)
+                    if now - activity_time <= timedelta(minutes=since_minutes):
+                        recent.append(activity)
+                        
+            return recent
+            
+        except Exception as e:
+            print(f"Error fetching activity for {address}: {e}")
+            return []
