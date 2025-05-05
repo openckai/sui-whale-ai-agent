@@ -167,6 +167,8 @@ class WhaleDetector:
                     address=holder_data['address'],
                     token_id=token.id
                 ).first()
+
+                print(f"Whale holder for line 170: {whale}")
                 
                 if not whale:
                     whale = WhaleHolder(
@@ -204,36 +206,32 @@ class WhaleDetector:
         db.commit()
         self.last_holder_update = current_time
         return whales
+
+
     
     def update_wallet_stats(self, db: Session, address: str, movement: Optional[WhaleMovement] = None) -> WalletStats:
         """Update wallet statistics based on movements"""
         stats = db.query(WalletStats).filter_by(address=address).first()
-        
-        if not stats:
-            stats = WalletStats(
-                address=address,
-                total_volume_usd=0,
-                total_trades=0,
-                total_pnl_usd=0
-            )
+        try:
+            # Create stats if not exists
+            if not stats:
+                stats = WalletStats(address=address)
             db.add(stats)
-        
-        if movement:
-            stats.total_volume_usd += movement.usd_value
-            stats.total_trades += 1
             
-            # Enhanced PnL calculation
-            if movement.movement_type == 'sell':
-                # Get average buy price from previous movements
-                buy_movements = db.query(WhaleMovement).filter_by(
-                    holder_id=movement.holder_id,
-                    movement_type='buy'
-                ).order_by(WhaleMovement.timestamp.desc()).all()
+            # Get detailed trader stats from InsideX
+            try:
+                trader_stats = self.insidex.get_trader_stats(address)
                 
-                if buy_movements:
-                    avg_buy_price = sum(m.usd_value for m in buy_movements) / sum(m.amount for m in buy_movements)
-                    pnl = (movement.usd_value / movement.amount - avg_buy_price) * movement.amount
-                    stats.total_pnl_usd += pnl
+                if trader_stats:
+                    stats.total_trades = trader_stats.get('total_trades', 0)
+                    stats.total_pnl_usd = trader_stats.get('pnl', 0)
+                    stats.total_volume_usd = trader_stats.get('volume', 0) 
+                    stats.win_rate = trader_stats.get('win_rate', 0)
+            except Exception as e:
+                print(f"Error getting trader stats from InsideX: {e}")
+        
+        except Exception as e:
+            print(f"Error getting trader stats from InsideX: {e}")
         
         db.commit()
         return stats

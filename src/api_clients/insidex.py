@@ -1,4 +1,5 @@
 from typing import Dict, List, Optional
+from numbers import Number
 from .base_client import BaseAPIClient
 
 class InsideXClient(BaseAPIClient):
@@ -122,3 +123,40 @@ class InsideXClient(BaseAPIClient):
         ]
 
         return sorted(whale_holders, key=lambda x: x["holdings_value"], reverse=True)
+    
+    def get_trader_stats(self, address: str) -> Dict:
+        """
+        Get trading statistics for a wallet address
+        
+        Args:
+            address: The wallet address to get stats for
+            
+        Returns:
+            Dict containing trading metrics like PnL, volume, win rate etc.
+        """
+        endpoint = f"spot-portfolio/{address}/spot-trade-stats"
+        response = self.get(endpoint)
+        
+        print(response)
+        
+        if not response:
+            return {}
+            
+        return {
+            "address": response.get("user"),
+            "is_bot": response.get("isBot", False),
+            "last_trade_timestamp": response.get("lastTradeTimestamp"),
+            "pnl": float(response.get("pnl") or 0),
+            "total_trades": int(response.get("totalTrades") or 0), 
+            "volume": float(response.get("volume") or 0),
+            "avg_sold_in": float(response["avgSoldIn"]) if isinstance(response.get("avgSoldIn"), Number) else None,
+            "gain": float(response.get("gain") or 0),
+            "invested": float(response.get("invested") or 0),
+            "losses": int(response.get("loses") or 0),
+            "loss_amount": float(response.get("loss") or 0),
+            "roi": float(response.get("roi") or 0),
+            "win_rate": float(response.get("winRate") or 0),
+            "wins": int(response.get("wins") or 0)
+        }
+
+

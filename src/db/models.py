@@ -73,11 +73,13 @@ class WalletStats(Base):
     total_volume_usd = Column(Float, default=0)
     total_trades = Column(Integer, default=0)
     total_pnl_usd = Column(Float, default=0)
+    win_rate = Column(Float, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    def win_rate(self) -> float:
-        """Calculate win rate based on PnL"""
-        if self.total_trades == 0:
-            return 0.0
-        return (self.total_pnl_usd / self.total_volume_usd) * 100 if self.total_volume_usd > 0 else 0.0
+    # def win_rate(self) -> float:
+    #     """Calculate win rate based on PnL"""
+    #     print(f"Total volume: {self.total_volume_usd}, Total PnL: {self.total_pnl_usd}, total trades: {self.total_trades}")
+    #     if self.total_trades == 0:
+    #         return 0.0
+    #     return (self.total_pnl_usd / self.total_volume_usd) * 100 if self.total_volume_usd > 0 else 0.0
