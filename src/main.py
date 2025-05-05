@@ -452,10 +452,10 @@ async def process_token_data():
     LOFI_COIN_TYPE = "0xf22da9a24ad027cccb5f2d496cbe91de953d363513db08a3a734d361c7c17503::LOFI::LOFI"
 
     # Step 1: Get trending tokens
-    # trending = get_trending_tokens(min_market_cap=1_000_000)
-    # if not trending:
-    #     print("No trending tokens found.")
-    #     return
+    trending = get_trending_tokens(min_market_cap=1_000_000)
+    if not trending:
+        print("No trending tokens found.")
+        return
 
     with get_db() as db:
         print("\nFetching whale holders for trending tokens...")
