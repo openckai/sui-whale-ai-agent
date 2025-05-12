@@ -155,7 +155,7 @@ class InsideXClient(BaseAPIClient):
             "losses": int(response.get("loses") or 0),
             "loss_amount": float(response.get("loss") or 0),
             "roi": float(response.get("roi") or 0),
-            "win_rate": float(response.get("winRate") or 0),
+            "win_rate": float(response.get("winRate") * 100 or 0),
             "wins": int(response.get("wins") or 0)
         }
 
