@@ -1,9 +1,12 @@
 from typing import Dict
+from modules.ai_insights import WhaleInsightGenerator
 
 class AlertService:
-    @staticmethod
-    def print_whale_movement(token_symbol: str, movement_data: Dict, whale_stats: Dict):
-        """Print formatted whale movement alert"""
+    def __init__(self):
+        self.insight_generator = WhaleInsightGenerator()
+
+    def print_whale_movement(self, token_symbol: str, movement_data: Dict, whale_stats: Dict):
+        """Print formatted whale movement alert with AI insights"""
         print(f"\n🚨 {token_symbol} Whale Movement Detected 🚨")
         print(
             f"A ${token_symbol} whale just "
@@ -12,7 +15,7 @@ class AlertService:
         )
         
         if whale_stats:
-            print("\nInsights on this whale:")
+            print("\n📊 Whale Statistics:")
             print(f"🔹 Win Rate: {whale_stats['win_rate']:.2f}%")
             print(f"🔹 Total Trades: {whale_stats['total_trades']}")
             pnl_str = 'Positive' if whale_stats['total_pnl_usd'] > 0 else 'Negative'
@@ -21,5 +24,14 @@ class AlertService:
             print(f"🔹 Average Trade: ${avg_trade:,.2f}")
             print(f"🔹 Total Volume: ${whale_stats['total_volume_usd']:,.2f}")
         else:
-            print("🔹 No stats available for this whale.")
-        print("-" * 30) 
+            print("\n📊 No statistics available for this whale.")
+
+        # Generate and print AI insights
+        print("\n🤖 AI Analysis:")
+        insights = self.insight_generator.generate_movement_insight(
+            token_symbol,
+            movement_data,
+            whale_stats or {}
+        )
+        print(insights)
+        print("-" * 50) 
