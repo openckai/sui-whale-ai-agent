@@ -46,7 +46,7 @@ async def process_token_data():
         whale_addresses = await whale_service.get_whale_addresses_for_tokens(trending)
         print(f"Found {len(whale_addresses)} unique whale addresses")
         # whale_addresses = set()
-        # whale_addresses.add("0xebaa13fc9c1477a0d61035700fd1b0360c9dc0cb688d64d2a9a7020d5e1039b7")
+        # whale_addresses.add("0x22823c31e4bfa60d8ea3052a99af6d02d70cd820b8a0a114be30b5f21beecbf7")
         # Monitor LOFI holdings
         LOFI_COIN_TYPE = "0xf22da9a24ad027cccb5f2d496cbe91de953d363513db08a3a734d361c7c17503::LOFI::LOFI"
         

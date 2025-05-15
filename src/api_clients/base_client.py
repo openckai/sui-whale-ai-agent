@@ -1,8 +1,29 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import httpx
 from urllib.parse import quote
 import asyncio
 from httpx import TimeoutException
+import json
+import time
+
+class APIError(Exception):
+    """Base class for API errors"""
+    pass
+
+class APITimeoutError(APIError):
+    """Raised when API request times out"""
+    pass
+
+class APIResponseError(APIError):
+    """Raised when API returns an error response"""
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        self.message = message
+        super().__init__(f"API request failed [{status_code}]: {message}")
+
+class APIMissingDataError(APIError):
+    """Raised when expected data is missing from API response"""
+    pass
 
 class BaseAPIClient:
     def __init__(self, base_url: str, api_key: Optional[str] = None, timeout: float = 120.0, max_retries: int = 3):
@@ -46,6 +67,16 @@ class BaseAPIClient:
             headers.update(additional_headers)
         return headers
 
+    def _validate_response_data(self, response_data: Any, required_fields: List[str] = None) -> None:
+        """Validate response data has required fields"""
+        if response_data is None:
+            raise APIMissingDataError("API response is empty")
+        
+        if required_fields:
+            missing_fields = [field for field in required_fields if field not in response_data]
+            if missing_fields:
+                raise APIMissingDataError(f"Missing required fields in API response: {', '.join(missing_fields)}")
+
     async def _make_request_async(
         self,
         method: str,
@@ -59,6 +90,8 @@ class BaseAPIClient:
         headers = self._get_headers(headers)
         
         retries = 0
+        last_error = None
+        
         while retries < self.max_retries:
             try:
                 # Verify timeout settings before making request
@@ -70,16 +103,27 @@ class BaseAPIClient:
                 )
                 response.raise_for_status()
                 return response
-            except TimeoutException:
+                
+            except TimeoutException as e:
+                last_error = e
                 retries += 1
                 if retries == self.max_retries:
-                    raise Exception(f"Request timed out after {self.max_retries} retries")
+                    raise APITimeoutError(f"Request timed out after {self.max_retries} retries: {str(e)}")
                 await asyncio.sleep(2 ** retries)  # Exponential backoff
+                
             except httpx.HTTPStatusError as e:
                 content = e.response.text
-                raise Exception(f"API request failed [{e.response.status_code}]: {content}")
+                raise APIResponseError(e.response.status_code, content)
+                
             except httpx.HTTPError as e:
-                raise Exception(f"Unexpected HTTP error: {str(e)}")
+                last_error = e
+                retries += 1
+                if retries == self.max_retries:
+                    raise APIError(f"HTTP error after {self.max_retries} retries: {str(e)}")
+                await asyncio.sleep(2 ** retries)
+                
+            except Exception as e:
+                raise APIError(f"Unexpected error: {str(e)}")
 
     def _make_request(
         self,
@@ -94,63 +138,100 @@ class BaseAPIClient:
         headers = self._get_headers(headers)
 
         retries = 0
+        last_error = None
+        
         while retries < self.max_retries:
             try:
                 response = self.client.request(method, url, params=params, headers=headers, json=json)
                 response.raise_for_status()
                 return response
-            except TimeoutException:
+                
+            except TimeoutException as e:
+                last_error = e
                 retries += 1
                 if retries == self.max_retries:
-                    raise Exception(f"Request timed out after {self.max_retries} retries")
-                asyncio.sleep(2 ** retries)  # Exponential backoff
+                    raise APITimeoutError(f"Request timed out after {self.max_retries} retries: {str(e)}")
+                time.sleep(2 ** retries)  # Exponential backoff
+                
             except httpx.HTTPStatusError as e:
                 content = e.response.text
-                raise Exception(f"API request failed [{e.response.status_code}]: {content}")
+                raise APIResponseError(e.response.status_code, content)
+                
             except httpx.HTTPError as e:
-                raise Exception(f"Unexpected HTTP error: {str(e)}")
+                last_error = e
+                retries += 1
+                if retries == self.max_retries:
+                    raise APIError(f"HTTP error after {self.max_retries} retries: {str(e)}")
+                time.sleep(2 ** retries)
+                
+            except Exception as e:
+                raise APIError(f"Unexpected error: {str(e)}")
 
     async def get_async(
         self,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        required_fields: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Make async GET request and return JSON response"""
-        response = await self._make_request_async("GET", endpoint, params=params, headers=headers)
-        return response.json()
+        try:
+            response = await self._make_request_async("GET", endpoint, params=params, headers=headers)
+            data = response.json()
+            self._validate_response_data(data, required_fields)
+            return data
+        except json.JSONDecodeError:
+            raise APIError("Invalid JSON response from API")
 
     async def post_async(
         self,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        required_fields: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Make async POST request and return JSON response"""
-        response = await self._make_request_async("POST", endpoint, params=params, json=json, headers=headers)
-        return response.json()
+        try:
+            response = await self._make_request_async("POST", endpoint, params=params, json=json, headers=headers)
+            data = response.json()
+            self._validate_response_data(data, required_fields)
+            return data
+        except json.JSONDecodeError:
+            raise APIError("Invalid JSON response from API")
 
     def get(
         self,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        required_fields: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Make GET request and return JSON response"""
-        response = self._make_request("GET", endpoint, params=params, headers=headers)
-        return response.json()
+        try:
+            response = self._make_request("GET", endpoint, params=params, headers=headers)
+            data = response.json()
+            self._validate_response_data(data, required_fields)
+            return data
+        except json.JSONDecodeError:
+            raise APIError("Invalid JSON response from API")
 
     def post(
         self,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Dict[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None
+        headers: Optional[Dict[str, str]] = None,
+        required_fields: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Make POST request and return JSON response"""
-        response = self._make_request("POST", endpoint, params=params, json=json, headers=headers)
-        return response.json()
+        try:
+            response = self._make_request("POST", endpoint, params=params, json=json, headers=headers)
+            data = response.json()
+            self._validate_response_data(data, required_fields)
+            return data
+        except json.JSONDecodeError:
+            raise APIError("Invalid JSON response from API")
 
     def encode_url_component(self, value: str) -> str:
         """Safely encode URL components"""
